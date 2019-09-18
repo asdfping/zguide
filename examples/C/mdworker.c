@@ -12,6 +12,7 @@ int main (int argc, char *argv [])
 
     zmsg_t *reply = NULL;
     while (true) {
+        //不断接收消息，然后处理重连、心跳等逻辑
         zmsg_t *request = mdwrk_recv (session, &reply);
         if (request == NULL)
             break;              //  Worker was interrupted

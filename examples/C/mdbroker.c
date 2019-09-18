@@ -138,16 +138,20 @@ s_broker_worker_msg (broker_t *self, zframe_t *sender, zmsg_t *msg)
     char *id_string = zframe_strhex (sender);
     int worker_ready = (zhash_lookup (self->workers, id_string) != NULL);
     free (id_string);
+
+    //从worker的消息中，查找这个worker的信息。如果没有，则添加到broker的hash table中
     worker_t *worker = s_worker_require (self, sender);
 
     if (zframe_streq (command, MDPW_READY)) {
         if (worker_ready)               //  Not first command in session
+            //这个worker已经添加到broker中了，但是又发了READY，可能是worker重启/或者检测到连接异常后，重连了
             s_worker_delete (worker, 1);
         else
         if (zframe_size (sender) >= 4  //  Reserved service name
         &&  memcmp (zframe_data (sender), "mmi.", 4) == 0)
             s_worker_delete (worker, 1);
         else {
+            //新的worker，添加到broker中
             //  Attach worker to service and mark as idle
             zframe_t *service_frame = zmsg_pop (msg);
             worker->service = s_service_require (self, service_frame);
@@ -199,6 +203,7 @@ s_broker_client_msg (broker_t *self, zframe_t *sender, zmsg_t *msg)
     assert (zmsg_size (msg) >= 2);     //  Service name + body
 
     zframe_t *service_frame = zmsg_pop (msg);
+    //根据消息，查找对应的服务
     service_t *service = s_service_require (self, service_frame);
 
     //  Set reply return identity to client sender
@@ -209,6 +214,7 @@ s_broker_client_msg (broker_t *self, zframe_t *sender, zmsg_t *msg)
     &&  memcmp (zframe_data (service_frame), "mmi.", 4) == 0) {
         char *return_code;
         if (zframe_streq (service_frame, "mmi.service")) {
+            //查找服务实例
             char *name = zframe_strdup (zmsg_last (msg));
             service_t *service =
                 (service_t *) zhash_lookup (self->services, name);
@@ -229,6 +235,7 @@ s_broker_client_msg (broker_t *self, zframe_t *sender, zmsg_t *msg)
         zmsg_send (&msg, self->socket);
     }
     else
+        //将消息发送给指定的服务实例
         //  Else dispatch the message to the requested service
         s_service_dispatch (service, msg);
     zframe_destroy (&service_frame);
@@ -245,6 +252,8 @@ static void
 s_broker_purge (broker_t *self)
 {
     worker_t *worker = (worker_t *) zlist_first (self->waiting);
+
+    //清理worker，将超时的worker的 delete
     while (worker) {
         if (zclock_time () < worker->expiry)
             break;                  //  Worker is alive, we're done here
@@ -308,6 +317,7 @@ s_service_destroy (void *argument)
 //  .split service dispatch method
 //  This method sends requests to waiting workers:
 
+//将消息发送给指定服务的实例
 static void
 s_service_dispatch (service_t *self, zmsg_t *msg)
 {
@@ -315,11 +325,14 @@ s_service_dispatch (service_t *self, zmsg_t *msg)
     if (msg)                    //  Queue message if any
         zlist_append (self->requests, msg);
 
+    //清理超时的worker
     s_broker_purge (self->broker);
     while (zlist_size (self->waiting) && zlist_size (self->requests)) {
+        //从waiting的worker中获取一个worker
         worker_t *worker = zlist_pop (self->waiting);
         zlist_remove (self->broker->waiting, worker);
         zmsg_t *msg = zlist_pop (self->requests);
+        //发送消息到指定的worker
         s_worker_send (worker, MDPW_REQUEST, NULL, msg);
         zmsg_destroy (&msg);
     }
@@ -331,6 +344,7 @@ s_service_dispatch (service_t *self, zmsg_t *msg)
 //  Lazy constructor that locates a worker by identity, or creates a new
 //  worker if there is no worker already with that identity.
 
+//如果有新的worker identity，将其插入到 broker 的worker hash table 中
 static worker_t *
 s_worker_require (broker_t *self, zframe_t *identity)
 {
@@ -358,6 +372,8 @@ s_worker_require (broker_t *self, zframe_t *identity)
 
 //  This method deletes the current worker.
 
+//删除指定的worker，如果需要断开连接，则发送断开连接消息
+//将删除的worker，从对应的服务实例集合中删除，从broker管理的worker集合中删除.
 static void
 s_worker_delete (worker_t *self, int disconnect)
 {
@@ -390,6 +406,7 @@ s_worker_destroy (void *argument)
 //  This method formats and sends a command to a worker. The caller may
 //  also provide a command option, and a message payload:
 
+//给worker发消息
 static void
 s_worker_send (worker_t *self, char *command, char *option, zmsg_t *msg)
 {
@@ -457,6 +474,7 @@ int main (int argc, char *argv [])
             zframe_t *empty  = zmsg_pop (msg);
             zframe_t *header = zmsg_pop (msg);
 
+            //根据消息来源，处理消息
             if (zframe_streq (header, MDPC_CLIENT))
                 s_broker_client_msg (self, sender, msg);
             else
@@ -473,6 +491,8 @@ int main (int argc, char *argv [])
         }
         //  Disconnect and delete any expired workers
         //  Send heartbeats to idle workers if needed
+
+        //达到可发送心跳的时间，则给worker发送消息
         if (zclock_time () > self->heartbeat_at) {
             s_broker_purge (self);
             worker_t *worker = (worker_t *) zlist_first (self->waiting);

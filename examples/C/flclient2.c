@@ -127,6 +127,7 @@ flclient_request (flclient_t *self, zmsg_t **request_p)
 
     //  Blast the request to all connected servers
     int server;
+    //利用DEALER发送消息时的负载均衡的特点，实现广播发送
     for (server = 0; server < self->servers; server++) {
         zmsg_t *msg = zmsg_dup (request);
         zmsg_send (&msg, self->socket);

@@ -47,6 +47,8 @@ int main (int argc, char *argv [])
     zmsg_t *request = zmsg_new ();
     zmsg_addstr (request, "echo");
     zmsg_addstr (request, "Hello world");
+
+    //发送 titanic.request ，获取请求uuid
     zmsg_t *reply = s_service_call (
         session, "titanic.request", &request);
 
@@ -61,6 +63,8 @@ int main (int argc, char *argv [])
         zclock_sleep (100);
         request = zmsg_new ();
         zmsg_add (request, zframe_dup (uuid));
+
+        //获取指定 uuid 的响应
         zmsg_t *reply = s_service_call (
             session, "titanic.reply", &request);
 
@@ -73,6 +77,8 @@ int main (int argc, char *argv [])
             //  3. Close request
             request = zmsg_new ();
             zmsg_add (request, zframe_dup (uuid));
+
+            //完成响应的获取，确认响应已经保存并处理
             reply = s_service_call (session, "titanic.close", &request);
             zmsg_destroy (&reply);
             break;

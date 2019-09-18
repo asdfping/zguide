@@ -19,6 +19,7 @@ struct _mdcli_t {
 
 void s_mdcli_connect_to_broker (mdcli_t *self)
 {
+    //reconnect. first close socket. then connct
     if (self->client)
         zsocket_destroy (self->ctx, self->client);
     self->client = zsocket_new (self->ctx, ZMQ_REQ);
@@ -91,11 +92,23 @@ mdcli_set_retries (mdcli_t *self, int retries)
 //  the request message, and destroys it when sent. It returns the reply
 //  message, or NULL if there was no reply after multiple attempts:
 
+/**
+ * 
+ * self mdc客户端
+ * service  对应的服务名
+ */
 zmsg_t *
 mdcli_send (mdcli_t *self, char *service, zmsg_t **request_p)
 {
     assert (self);
     assert (request_p);
+    /**
+     * 
+     * 客户端消息结构：
+     * | MDPC_CLIENT | service | 业务消息|
+     * 
+     */
+
     zmsg_t *request = *request_p;
 
     //  Prefix request with protocol frames
@@ -146,6 +159,7 @@ mdcli_send (mdcli_t *self, char *service, zmsg_t **request_p)
             return msg;     //  Success
         }
         else
+        //超时了，没有收到消息
         if (--retries_left) {
             if (self->verbose)
                 zclock_log ("W: no reply, reconnecting...");

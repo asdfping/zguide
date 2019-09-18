@@ -139,10 +139,12 @@ server_ping (const char *key, void *server, void *socket)
 {
     server_t *self = (server_t *) server;
     if (zclock_time () >= self->ping_at) {
+        //当前时间，到了需要ping的时间，那么发送ping
         zmsg_t *ping = zmsg_new ();
         zmsg_addstr (ping, self->endpoint);
         zmsg_addstr (ping, "PING");
         zmsg_send (&ping, socket);
+        //记录下一次发送ping的时间
         self->ping_at = zclock_time () + PING_INTERVAL;
     }
     return 0;
@@ -151,6 +153,7 @@ server_ping (const char *key, void *server, void *socket)
 int
 server_tickless (const char *key, void *server, void *arg)
 {
+    //更新tickless时间
     server_t *self = (server_t *) server;
     uint64_t *tickless = (uint64_t *) arg;
     if (*tickless > self->ping_at)
@@ -219,24 +222,29 @@ s_server_free (void *argument)
 void
 agent_control_message (agent_t *self)
 {
+    //处理来自主线程的控制帧消息
     zmsg_t *msg = zmsg_recv (self->pipe);
     char *command = zmsg_popstr (msg);
 
     if (streq (command, "CONNECT")) {
+        //请求连接服务端
         char *endpoint = zmsg_popstr (msg);
         printf ("I: connecting to %s...\n", endpoint);
         int rc = zmq_connect (self->router, endpoint);
         assert (rc == 0);
         server_t *server = server_new (endpoint);
+        //将服务端信息添加到可用服务列表中
         zhash_insert (self->servers, endpoint, server);
         zhash_freefn (self->servers, endpoint, s_server_free);
         zlist_append (self->actives, server);
+        //设置ping和超时时间
         server->ping_at = zclock_time () + PING_INTERVAL;
         server->expires = zclock_time () + SERVER_TTL;
         free (endpoint);
     }
     else
     if (streq (command, "REQUEST")) {
+        //业务请求消息
         assert (!self->request);    //  Strict request-reply cycle
         //  Prefix request with sequence number and empty envelope
         char sequence_text [10];
@@ -246,6 +254,7 @@ agent_control_message (agent_t *self)
         self->request = msg;
         msg = NULL;
         //  Request expires after global timeout
+        // 设置超时时间
         self->expires = zclock_time () + GLOBAL_TIMEOUT;
     }
     free (command);
@@ -259,6 +268,7 @@ agent_control_message (agent_t *self)
 void
 agent_router_message (agent_t *self)
 {
+    //处理ROUTER socket 的消息
     zmsg_t *reply = zmsg_recv (self->router);
 
     //  Frame 0 is server that replied
@@ -268,15 +278,18 @@ agent_router_message (agent_t *self)
     assert (server);
     free (endpoint);
     if (!server->alive) {
+        //收到对端消息，说明此时对端是alive的，因此要修正alive标记
         zlist_append (self->actives, server);
         server->alive = 1;
     }
+    //收到对端消息后，重置ping时间和超时时间
     server->ping_at = zclock_time () + PING_INTERVAL;
     server->expires = zclock_time () + SERVER_TTL;
 
     //  Frame 1 may be sequence number for reply
     char *sequence = zmsg_popstr (reply);
     if (atoi (sequence) == self->sequence) {
+        //收到正确的消息（根据异步id确认），给主线程发消息
         zmsg_pushstr (reply, "OK");
         zmsg_send (&reply, self->pipe);
         zmsg_destroy (&self->request);
@@ -304,6 +317,7 @@ flcliapi_agent (void *args, zctx_t *ctx, void *pipe)
         if (self->request
         &&  tickless > self->expires)
             tickless = self->expires;
+        //更新所连接的服务端的tickless时间
         zhash_foreach (self->servers, server_tickless, &tickless);
 
         int rc = zmq_poll (items, 2,
@@ -312,28 +326,37 @@ flcliapi_agent (void *args, zctx_t *ctx, void *pipe)
             break;              //  Context has been shut down
 
         if (items [0].revents & ZMQ_POLLIN)
+            //收到主线程消息，处理连接、业务请求消息
+            //若收到REQ消息，则self->request != nullptr
+            //若收到REQ消息，则client的超时等待时间为当前时间 + 响应超时时间
             agent_control_message (self);
 
         if (items [1].revents & ZMQ_POLLIN)
+            //收到远程消息
             agent_router_message (self);
 
         //  If we're processing a request, dispatch to next server
+        // 需要发送请求消息
         if (self->request) {
             if (zclock_time () >= self->expires) {
+                // 都超时了，那么不可能发送成功了，告知主线程发送失败
                 //  Request expired, kill it
                 zstr_send (self->pipe, "FAILED");
                 zmsg_destroy (&self->request);
             }
             else {
                 //  Find server to talk to, remove any expired ones
+                //遍历客户端管理的服务端列表
                 while (zlist_size (self->actives)) {
                     server_t *server =
                         (server_t *) zlist_first (self->actives);
                     if (zclock_time () >= server->expires) {
+                        //发现超时了，alive标记设置为0
                         zlist_pop (self->actives);
                         server->alive = 0;
                     }
                     else {
+                        //发现一个可用的服务端，立刻发送
                         zmsg_t *request = zmsg_dup (self->request);
                         zmsg_pushstr (request, server->endpoint);
                         zmsg_send (&request, self->router);
@@ -344,6 +367,7 @@ flcliapi_agent (void *args, zctx_t *ctx, void *pipe)
         }
         //  Disconnect and delete any expired servers
         //  Send heartbeats to idle servers if needed
+        // 给每个服务端发送ping消息
         zhash_foreach (self->servers, server_ping, self->router);
     }
     agent_destroy (&self);

@@ -199,9 +199,11 @@ mdwrk_recv (mdwrk_t *self, zmsg_t **reply_p)
                 return msg;     //  We have a request to process
             }
             else
+            //收到心跳，什么也不做
             if (zframe_streq (command, MDPW_HEARTBEAT))
                 ;               //  Do nothing for heartbeats
             else
+            //收到断开连接消息，则再次重连
             if (zframe_streq (command, MDPW_DISCONNECT))
                 s_mdwrk_connect_to_broker (self);
             else {
@@ -212,12 +214,15 @@ mdwrk_recv (mdwrk_t *self, zmsg_t **reply_p)
             zmsg_destroy (&msg);
         }
         else
+        //超时了，没有收到任何消息
         if (--self->liveness == 0) {
             if (self->verbose)
                 zclock_log ("W: disconnected from broker - retrying...");
             zclock_sleep (self->reconnect);
+            //间隔一段时间，开始重连
             s_mdwrk_connect_to_broker (self);
         }
+        //时间超过了心跳发送时间，则发送心跳
         //  Send HEARTBEAT if it's time
         if (zclock_time () > self->heartbeat_at) {
             s_mdwrk_send_to_broker (self, MDPW_HEARTBEAT, NULL, NULL);

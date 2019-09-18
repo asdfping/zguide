@@ -30,6 +30,7 @@ s_generate_uuid (void)
 
 #define TITANIC_DIR ".titanic"
 
+//file name: .titanic/uuid.req
 static char *
 s_request_filename (char *uuid) {
     char *filename = malloc (256);
@@ -51,9 +52,11 @@ s_reply_filename (char *uuid) {
 //  each request to disk and returns a UUID to the client. The client picks
 //  up the reply asynchronously using the {{titanic.reply}} service:
 
+//负责titanic.request的线程
 static void
 titanic_request (void *args, zctx_t *ctx, void *pipe)
 {
+    //DEALER socket
     mdwrk_t *worker = mdwrk_new (
         "tcp://localhost:5555", "titanic.request", 0);
     zmsg_t *reply = NULL;
@@ -61,6 +64,7 @@ titanic_request (void *args, zctx_t *ctx, void *pipe)
     while (true) {
         //  Send reply if it's not null
         //  And then get next request from broker
+        // 1. 接收broker的消息
         zmsg_t *request = mdwrk_recv (worker, &reply);
         if (!request)
             break;      //  Interrupted, exit
@@ -69,16 +73,19 @@ titanic_request (void *args, zctx_t *ctx, void *pipe)
         zfile_mkdir (TITANIC_DIR);
 
         //  Generate UUID and save message to disk
+        //2. 生成 uuid
         char *uuid = s_generate_uuid ();
         char *filename = s_request_filename (uuid);
         FILE *file = fopen (filename, "w");
         assert (file);
+        //3. 将请求保存到 .titanic/uuid.req 中
         zmsg_save (request, file);
         fclose (file);
         free (filename);
         zmsg_destroy (&request);
 
         //  Send UUID through to message queue
+        // 将 uuid 的 reply发送给主线程
         reply = zmsg_new ();
         zmsg_addstr (reply, uuid);
         zmsg_send (&reply, pipe);
@@ -106,6 +113,7 @@ titanic_reply (void *context)
     zmsg_t *reply = NULL;
 
     while (true) {
+        //收到来自worker的响应
         zmsg_t *request = mdwrk_recv (worker, &reply);
         if (!request)
             break;      //  Interrupted, exit
@@ -114,15 +122,18 @@ titanic_reply (void *context)
         char *req_filename = s_request_filename (uuid);
         char *rep_filename = s_reply_filename (uuid);
         if (zfile_exists (rep_filename)) {
+            //disk已经持久化了响应
             FILE *file = fopen (rep_filename, "r");
             assert (file);
             reply = zmsg_load (NULL, file);
+            //回复 200(OK)
             zmsg_pushstr (reply, "200");
             fclose (file);
         }
         else {
             reply = zmsg_new ();
             if (zfile_exists (req_filename))
+                //有对应的请求，但没有响应。300（Pending）
                 zmsg_pushstr (reply, "300"); //Pending
             else
                 zmsg_pushstr (reply, "400"); //Unknown
@@ -149,6 +160,7 @@ titanic_close (void *context)
     zmsg_t *reply = NULL;
 
     while (true) {
+        //收到worker的响应
         zmsg_t *request = mdwrk_recv (worker, &reply);
         if (!request)
             break;      //  Interrupted, exit
@@ -156,6 +168,8 @@ titanic_close (void *context)
         char *uuid = zmsg_popstr (request);
         char *req_filename = s_request_filename (uuid);
         char *rep_filename = s_reply_filename (uuid);
+
+        //删除uuid对应的持久化请求、响应文件
         zfile_delete (req_filename);
         zfile_delete (rep_filename);
         free (uuid);
@@ -185,6 +199,7 @@ int main (int argc, char *argv [])
     int verbose = (argc > 1 && streq (argv [1], "-v"));
     zctx_t *ctx = zctx_new ();
 
+    //titanic worker 拆分为三个线程，负责 req\rep\close
     void *request_pipe = zthread_fork (ctx, titanic_request, NULL);
     zthread_new (titanic_reply, NULL);
     zthread_new (titanic_close, NULL);
@@ -206,6 +221,7 @@ int main (int argc, char *argv [])
                 break;          //  Interrupted
             FILE *file = fopen (TITANIC_DIR "/queue", "a");
             char *uuid = zmsg_popstr (msg);
+            //保存uuid到队列文件中，队列文件是一连串的uuid
             fprintf (file, "-%s\n", uuid);
             fclose (file);
             free (uuid);
@@ -256,12 +272,14 @@ s_service_success (char *uuid)
     if (!file)
         return 1;
 
+    //根据uuid，获取请求数据
     zmsg_t *request = zmsg_load (NULL, file);
     fclose (file);
     zframe_t *service = zmsg_pop (request);
     char *service_name = zframe_strdup (service);
 
     //  Create MDP client session with short timeout
+    // 创建 zmq_REQ 的socket，但连接的是 broker
     mdcli_t *client = mdcli_new ("tcp://localhost:5555", false);
     mdcli_set_timeout (client, 1000);  //  1 sec
     mdcli_set_retries (client, 1);     //  only 1 retry
@@ -276,8 +294,10 @@ s_service_success (char *uuid)
 
     int result = 0;
     if (service_ok) {
+        //如果 服务正常，则向broker发送消息
         zmsg_t *reply = mdcli_send (client, service_name, &request);
         if (reply) {
+            //获取到reply，则保存reply消息
             filename = s_reply_filename (uuid);
             FILE *file = fopen (filename, "w");
             assert (file);

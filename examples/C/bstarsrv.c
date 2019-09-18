@@ -36,6 +36,7 @@ typedef struct {
 //  The FSM runs one event at a time. We apply an event to the current state,
 //  which checks if the event is accepted, and if so, sets a new state:
 
+//服务端的状态机转换，主和备都有初始态（主/备）和当前态（激活/未激活）
 static bool
 s_state_machine (bstar_t *fsm)
 {
@@ -99,16 +100,20 @@ s_state_machine (bstar_t *fsm)
             exception = true;
         }
         else
+            //本机是 passive，收到客户端请求
         if (fsm->event == CLIENT_REQUEST) {
             //  Peer becomes active if timeout has passed
             //  It's the client request that triggers the failover
             assert (fsm->peer_expiry > 0);
             if (zclock_time () >= fsm->peer_expiry) {
                 //  If peer is dead, switch to the active state
+                //  对端没有再规定事件内汇报状态，说明对端已经故障，本机可以处理请求
+                //  状态由 passive --> active
                 printf ("I: failover successful, ready active\n");
                 fsm->state = STATE_ACTIVE;
             }
             else
+                // 至少目前看来，对端还是存活的，所以passive状态下的本机，不能接受请求
                 //  If peer is alive, reject connections
                 exception = true;
         }
@@ -176,6 +181,7 @@ int main (int argc, char *argv [])
         if (items [0].revents & ZMQ_POLLIN) {
             //  Have a client request
             zmsg_t *msg = zmsg_recv (frontend);
+            //客户端请求事件，进行状态机切换。
             fsm.event = CLIENT_REQUEST;
             if (s_state_machine (&fsm) == false)
                 //  Answer client by echoing request back
@@ -185,6 +191,7 @@ int main (int argc, char *argv [])
         }
         if (items [1].revents & ZMQ_POLLIN) {
             //  Have state from our peer, execute as event
+            //  收到对端的事件
             char *message = zstr_recv (statesub);
             fsm.event = atoi (message);
             free (message);
@@ -195,6 +202,7 @@ int main (int argc, char *argv [])
         //  If we timed out, send state to peer
         if (zclock_time () >= send_state_at) {
             char message [2];
+            //定期将自己的状态汇报给对端
             sprintf (message, "%d", fsm.state);
             zstr_send (statepub, message);
             send_state_at = zclock_time () + HEARTBEAT;

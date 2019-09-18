@@ -13,6 +13,7 @@ int main (int argc, char *argv [])
     for (count = 0; count < 100000; count++) {
         zmsg_t *request = zmsg_new ();
         zmsg_pushstr (request, "Hello world");
+        //client，不断地发送消息，接收消息，如果超时，则尝试重连
         zmsg_t *reply = mdcli_send (session, "echo", &request);
         if (reply)
             zmsg_destroy (&reply);

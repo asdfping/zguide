@@ -55,6 +55,7 @@ int main (int argc, char *argv [])
     }
     else {
         //  For multiple endpoints, try each at most once
+        // 一个个的实例去尝试连接，如果失败就尝试下一个；成功则与这个实例通信
         int endpoint_nbr;
         for (endpoint_nbr = 0; endpoint_nbr < endpoints; endpoint_nbr++) {
             char *endpoint = argv [endpoint_nbr + 1];

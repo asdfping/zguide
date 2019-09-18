@@ -19,3 +19,6 @@ upload.sh
 changes.txt
 *.swp
 testdata*
+cmake-build-debug/
+.vscode
+.idea/
